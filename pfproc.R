@@ -10,6 +10,7 @@ library(R6)
 
 #flsa<-import_from_path('flsa', path="C:\\Users\\zulfi\\OneDrive\\python\\convex")
 
+REMOTE_SERVER = 'http://ec2-18-221-247-10.us-east-2.compute.amazonaws.com/'
 
 evaluate_y_axis<-function( q, x ){
   y<-interp1(q.keys(),q.values(), x, type="cubic")
@@ -167,7 +168,7 @@ hierarchical_cluster<-function(data){
 async_hierarchical_cluster<-function(data){
   # let's assume blocking response for now
   print(paste('first line', data[1,]))
-  res<-POST( url='http://127.0.0.1:6062/', body=toJSON(data))
+  res<-POST( url=REMOTE_SERVER, body=toJSON(data))
   #headers<-headers(res)
   #print(headers)
   res_json<-content(res,as="text")
@@ -333,7 +334,9 @@ parallel_cluster_medium_data<-function( mediumDataset ){
   as.dendrogram(bigtree)
 }
 
-
+########################################################
+#  Currently under development -- this code right here
+#
 Process<-R6Class( "Process", list(
 
     epsilon = 5e-6,
@@ -353,19 +356,26 @@ Process<-R6Class( "Process", list(
       self$epsilon<- 5e-6
       self$chunks<-split_dataset( dataset )
       n<-length(self$chunks)
+      print(paste('chunks: ',n))
+      
       self$task_list<-vector( "list", n )
       self$tree_list<-vector( "list", n )
       self$jobs_processed<-rep(0,n)
       self$jobs_dispatched<-rep(0,n)
+      self$jobs_queue<-queue()
       self$errors<-c()
 
-      self$load_jobs( 5 )
+      self$load_jobs( min(n,5) )
+    },
+    
+    n_queued_jobs = function( ){
+      length(as.list(self$jobs_queue))
     },
 
     load_jobs= function(k){
       m<-1
-      for ( rr in 1:length(self$chunks)){
-        if ( !resolved(self$task_list[[rr]])) {
+      for ( rr in 1:length(self$chunks) ){
+        if ( self$jobs_dispatched[rr] == 0) {
           if ( m <= k){
             pushback( self$jobs_queue, rr)
             m<-m+1
@@ -375,42 +385,49 @@ Process<-R6Class( "Process", list(
     },
 
     dispatch_jobs = function( ){
-      while ( length(self$jobs_queue) > 0 ){
+      while ( length(as.list(self$jobs_queue)) > 0 ){
         id = pop( self$jobs_queue )
+        print(paste('dispatching job',id))
         f<-future({async_hierarchical_cluster( self$chunks[[id]] )})
         self$task_list[[id]]<-f
         self$jobs_dispatched[id]<-1
-      }    
+      }
    },
 
     print_message = function( ){
-      k<-length(errors)
-      print( paste( k, errors[k] ))
+      k<-length(self$errors)
+      print( paste( k, self$errors[k] ))
     },
+  
 
-    handle_job_done = function( id ){
-      if ( ! self$jobs_dispatched[id ]){
-        return
+    process_jobs_done = function( id ){
+      
+      if ( ! self$jobs_dispatched[ id ]){
+        return(FALSE)
       }
       
       if ( is.null(self$task_list[[id]]) ){
+        print(paste('job %d has no future attached', id))
         return(FALSE)
       }
       
       if ( ! resolved( self$task_list[[id]] ) ){
         return(FALSE)
       }
-      self$jobs_processed[id]<-1
 
-      self$tree_list[[id]] <- as.dendrogram( value( self$task_list[[ id ]] ) )
+      returned_hclust<-value( self$task_list[[ id ]] )
+      self$tree_list[[id]] <- as.dendrogram( returned_hclust  )
       tree <- self$tree_list[[ id ]]
 
       self$prev_bigtree <- self$bigtree
-      self$bigtree <- merge( prev_bigtree, self$bigtree )
+      self$bigtree <- merge( self$prev_bigtree, self$bigtree )
 
       self$current_error<-self$dendogram_distance( self$bigtree, self$prev_bigtree)
       self$errors<-append( self$errors, self$current_error )
-      self$print_message()      
+      self$print_message()
+      
+      self$jobs_processed[id]<-1
+      TRUE
     },
     
     check_termination_condition = function( ) {
@@ -424,24 +441,44 @@ Process<-R6Class( "Process", list(
       return(FALSE)
     },
 
+    status = function( ){
+      n_jobs_sent<-sum(self$jobs_dispatched)
+      n_jobs_done<-sum(self$jobs_processed)
+      print( paste( 'jobs done:', n_jobs_done, 'jobs sent:', n_jobs_sent, 'total:', length(self$chunks)))
+    },
+   
     run = function(){
       while (TRUE){
+        Sys.sleep(2)
+        print(self$status())
         finish<-self$check_termination_condition()
+        
         if ( finish ) {
           return( self$bigtree )
         }
 
-        # send out at most 5 more jobs if processed jobs
-        # exceed done jobs - 5
-        if ( sum(self$jobs_processed) + 5 >= sum(self$jobs_dispatched) ){
-          # select and dispatch at most five more jobs
-          self$load_jobs(5)
-          self$dispatch_jobs()
-        }
+        # criteria for sending out more jobs
+        # 
+        if ( sum(self$jobs_dispatched) < length(self$chunks) ){
+            if ( sum(self$jobs_dispatched) - sum(self$jobs_processed) < 5 ){
+      
+            n_undispatched_jobs<-length(self$chunks)-sum(self$jobs_processed)
 
+            # select and dispatch at most five more jobs
+            self$load_jobs(min(n_undispatched_jobs, 5))
+            
+            self$dispatch_jobs()
+          }
+        }
+        
         # look through jobs done
-        for ( id in 1:length(self$chunks)){
-          self$handle_job_done(id)
+        for ( k in 1:length(self$chunks) ){
+          if ( self$jobs_dispatched[k] &&
+               (! self$jobs_processed[k])) {
+            print(paste('here',k))
+            st<-self$process_jobs_done(k)
+            print('later')
+          }
         }
       }
       self$bigtree
@@ -455,6 +492,7 @@ parallel_controlled_cluster_medium_data<-function( mediumDataset ){
   bt<-P$run()
 }
 
+##############################################
 # Old code
 parallel_controlled_cluster_medium_data_old<-function( mediumDataset ){
   plan(sequential)
