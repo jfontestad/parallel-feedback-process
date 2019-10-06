@@ -110,6 +110,7 @@ tree_probability_density<-function( tree ){
   probability_density
 }
 
+
 check_tree<-function( tree ){
   q<-tree_probability_density(tree)
   if (is.null(q)){
@@ -128,16 +129,21 @@ check_tree<-function( tree ){
     return(FALSE)
   }
 }
+
 dendrogram_distance<-function( T1, T2 )
 {
   q1<-tree_probability_density( T1 )
   q2<-tree_probability_density( T2 )
   
+  if (is.null(q1) || is.null(q1)){
+    print( 'one of the probability densities is null')
+    return(1e-3)
+  }
   #these should be spline objects
-  #print('Is spline q1 working ok:')
-  #print(predict( q1, c(0.2,0.4, 0.6, 0.8)))
-  #print('Is spline q2 working ok:')
-  #print(predict( q2, c(0.2,0.4, 0.6,0.8)))
+  print('Is spline q1 working ok:')
+  print(predict( q1, c(0.2,0.4, 0.6, 0.8)))
+  print('Is spline q2 working ok:')
+  print(predict( q2, c(0.2,0.4, 0.6,0.8)))
   
   qdist<-abs(kullback_leibler_divergence( q1, q2 ))
   if (is.na(qdist)){
@@ -420,9 +426,11 @@ Process<-R6Class( "Process", list(
       tree <- self$tree_list[[ id ]]
 
       self$prev_bigtree <- self$bigtree
-      self$bigtree <- merge( self$prev_bigtree, self$bigtree )
-
-      self$current_error<-self$dendogram_distance( self$bigtree, self$prev_bigtree)
+      if ( !is.null(self$prev_bigtree) && !is.null(self$bigtree)){
+        self$bigtree <- merge( self$prev_bigtree, self$bigtree )
+      }
+      
+      self$current_error<-dendrogram_distance( self$bigtree, self$prev_bigtree)
       self$errors<-append( self$errors, self$current_error )
       self$print_message()
       
@@ -490,6 +498,9 @@ Process<-R6Class( "Process", list(
 parallel_controlled_cluster_medium_data<-function( mediumDataset ){
   P<-Process$new(mediumDataset)
   bt<-P$run()
+  errors<-P$errors
+  print('errors')
+  print(errors)
 }
 
 ##############################################
