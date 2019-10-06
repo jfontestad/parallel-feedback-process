@@ -334,7 +334,7 @@ parallel_cluster_medium_data<-function( mediumDataset ){
 }
 
 
-proc<-R6Class( "Process", list(
+Process<-R6Class( "Process", list(
 
     epsilon = 5e-6,
     current_error = 1000,
@@ -349,6 +349,8 @@ proc<-R6Class( "Process", list(
     errors = NULL,
 
     initialize = function( dataset ) {
+      self$current_error<-1000
+      self$epsilon<- 5e-6
       self$chunks<-split_dataset( dataset )
       n<-length(self$chunks)
       self$task_list<-vector( "list", n )
@@ -374,7 +376,7 @@ proc<-R6Class( "Process", list(
 
     dispatch_jobs = function( ){
       while ( length(self$jobs_queue) > 0 ){
-        id = pop( self$jobs_queue)
+        id = pop( self$jobs_queue )
         f<-future({async_hierarchical_cluster( self$chunks[[id]] )})
         self$task_list[[id]]<-f
         self$jobs_dispatched[id]<-1
@@ -384,16 +386,23 @@ proc<-R6Class( "Process", list(
     print_message = function( ){
       k<-length(errors)
       print( paste( k, errors[k] ))
-    }
+    },
 
     handle_job_done = function( id ){
+      if ( ! self$jobs_dispatched[id ]){
+        return
+      }
+      
+      if ( is.null(self$task_list[[id]]) ){
+        return(FALSE)
+      }
       
       if ( ! resolved( self$task_list[[id]] ) ){
         return(FALSE)
       }
       self$jobs_processed[id]<-1
 
-      self$tree_list[[id]] <- as.dendogram( value( self$task_list[[ id ]] ) )
+      self$tree_list[[id]] <- as.dendrogram( value( self$task_list[[ id ]] ) )
       tree <- self$tree_list[[ id ]]
 
       self$prev_bigtree <- self$bigtree
@@ -408,7 +417,8 @@ proc<-R6Class( "Process", list(
       if (sum(self$jobs_processed) > length(self$chunks)-1 ){
         return(TRUE)
       }
-      if ( self$current_error > 0 && self$cureent_error < epsilon ){
+      if ( (self$current_error > 0) && 
+           (self$current_error < self$epsilon )){
         return(TRUE)
       }
       return(FALSE)
@@ -434,15 +444,14 @@ proc<-R6Class( "Process", list(
           self$handle_job_done(id)
         }
       }
-      return self$bigtree
+      self$bigtree
     }
   )
 )
 
 
 parallel_controlled_cluster_medium_data<-function( mediumDataset ){
-  P<-Process()
-  P$initialize( mediumDataset)
+  P<-Process$new(mediumDataset)
   bt<-P$run()
 }
 
