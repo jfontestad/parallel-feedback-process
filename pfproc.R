@@ -425,10 +425,19 @@ Process<-R6Class( "Process", list(
       self$tree_list[[id]] <- as.dendrogram( returned_hclust  )
       tree <- self$tree_list[[ id ]]
 
+      if (is.null(self$bigtree)){
+        self$bigtree<-tree
+        return(TRUE)
+      }
+      
       self$prev_bigtree <- self$bigtree
       if ( !is.null(self$prev_bigtree) && !is.null(self$bigtree)){
-        self$bigtree <- merge( self$prev_bigtree, self$bigtree )
+        self$bigtree <- merge( self$prev_bigtree, tree )
       }
+      
+      # do some diagnostics for the trees here
+      print( paste('prev_bigtree members', attr(self$prev_bigtree, "members") ))
+      print( paste('bigtree members', attr(self$bigtree, "members") ))
       
       self$current_error<-dendrogram_distance( self$bigtree, self$prev_bigtree)
       self$errors<-append( self$errors, self$current_error )
