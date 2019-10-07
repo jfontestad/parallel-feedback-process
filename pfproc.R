@@ -340,6 +340,236 @@ parallel_cluster_medium_data<-function( mediumDataset ){
   as.dendrogram(bigtree)
 }
 
+
+
+
+SERVER1 = 'ec2-18-221-247-10.us-east-2.compute.amazonaws.com'
+SERVER2 = 'ec2-18-218-228-166.us-east-2.compute.amazonaws.com'
+
+SERVERS = list( SERVER1, SERVER2 )
+
+clustering_task<-function(data, server){
+  res<-POST( url=server, body=toJSON(data))
+  res_json<-content(res,as="text")  
+  tree<-unserializeJSON(res_json)
+  tree
+}
+
+
+HCProcessState<-R6Class( "HCProcessState", public=list(
+    
+    tree_list = NULL,
+    bigtree = NULL,
+    prev_bigtree = NULL,
+    errors = c(),
+    current_error = 1000,
+  initialize = function(){
+    self$current_error = 1000
+  },
+  update_with_result = function( result ){
+    if ( is.null(self$bigtree)) {
+      self$bigtree<-as.dendrogram(result)
+    } else {
+      self$prev_bigtree<-self$bigtree
+      self$bigtree<-merge( self$prev_bigtree, as.dendrogram(result))
+      self$current_error<-dendrogram_distance( self$bigtree, self$prev_bigtree )
+      self$errors<-append(self$errors, self$current_error)
+    }
+  }
+))
+
+
+HCProcessControl<-R6Class( "HCProcessControl", public=list(
+  epsilon = 5e-5,
+  initialize = function(){
+    epsilon= 5e-5
+  },
+
+  termination_condition = function( state ){
+    print( state$current_error )
+    if (abs(state$current_error)>0 && abs(state$current_error)< self$epsion){
+      return(TRUE)
+    }
+    return(FALSE)
+  }
+))
+
+########################################################
+#  Currently under development -- this code right here
+#
+FeedbackControlProcess<-R6Class( "FeedbackControlProcess", list(
+
+    state = NULL,
+    chunks = NULL,
+    servers = NULL,
+    task_fun = NULL,
+    task_list = NULL,
+    jobs_processed = NULL,
+    jobs_dispatched = NULL,
+    jobs_queue = NULL,
+    cur_server = NULL,
+    output_list = NULL,
+    control = NULL,
+    initialize = function( dataset , task, state, control, servers=SERVERS) {
+
+      self$chunks<-split_dataset( dataset )
+      n<-length(self$chunks)
+      self$control = control
+      self$state = state
+      self$task_list<-vector( "list", n )
+      self$output_list<-vector( "list", n )
+      self$jobs_processed<-rep(0,n)
+      self$jobs_dispatched<-rep(0,n)
+      self$jobs_queue<-queue()
+      self$servers = servers
+      self$cur_server = 1
+      self$task_fun = task
+      self$load_jobs( min(n,5) )
+    },
+    
+    select_server = function(){
+      # just rotate
+      self$cur_server = self$cur_server+1 %% length(self$servers)
+      if (sel$cur_server==0){
+        self$cur_server<-1
+      }
+      self$cur_server
+    },
+  
+    n_queued_jobs = function( ){
+      length(as.list(self$jobs_queue))
+    },
+
+    load_jobs= function(k){
+      m<-1
+      for ( rr in 1:length(self$chunks) ){
+        if ( self$jobs_dispatched[rr] == 0) {
+          if ( m <= k){
+            pushback( self$jobs_queue, rr)
+            m<-m+1
+          }
+        } 
+      }
+    },
+
+    dispatch_jobs = function( ){
+      while ( length(as.list(self$jobs_queue)) > 0 ){
+        id = pop( self$jobs_queue )
+        print(paste('dispatching job',id))
+        f<-future({task_fun( self$chunks[[id]], self$servers[[self$select_server()]] )})
+        self$task_list[[id]]<-f
+        self$jobs_dispatched[id]<-1
+      }
+   },
+
+
+    process_jobs_done = function( id ){
+      
+      if ( ! self$jobs_dispatched[ id ]){
+        return(FALSE)
+      }
+      
+      if ( is.null(self$task_list[[id]]) ){
+        print(paste('job %d has no future attached', id))
+        return(FALSE)
+      }
+      
+      if ( ! resolved( self$task_list[[id]] ) ){
+        return(FALSE)
+      }
+
+      returned_output<-value( self$task_list[[ id ]] )
+      self$output_list[[id]] <- returned_output
+      output <- self$output_list[[ id ]]
+
+      # update state by control
+      self$state$update_with_result( output_list, self$control)      
+
+      self$jobs_processed[id]<-1
+      TRUE
+    },
+    
+    check_termination_condition = function( ) {
+      if (sum(self$jobs_processed) > length(self$chunks)-1 ){
+        return(TRUE)
+      }
+      if ( self$control$termination_condition( self$state) ){
+        return(TRUE)
+      }
+      return(FALSE)
+    },
+
+    status = function( ){
+      n_jobs_sent<-sum(self$jobs_dispatched)
+      n_jobs_done<-sum(self$jobs_processed)
+      print( paste( 'jobs done:', n_jobs_done, 'jobs sent:', n_jobs_sent, 'total:', length(self$chunks)))
+    },
+   
+    run = function(){
+      while (TRUE){
+        Sys.sleep(2)
+        print(self$status())
+        finish<-self$check_termination_condition()
+        
+        if ( finish ) {
+          return( self$output_list)
+        }
+
+        # criteria for sending out more jobs
+        # 
+        if ( sum(self$jobs_dispatched) < length(self$chunks) ){
+            if ( sum(self$jobs_dispatched) - sum(self$jobs_processed) < 5 ){
+      
+            n_undispatched_jobs<-length(self$chunks)-sum(self$jobs_processed)
+
+            # select and dispatch at most five more jobs
+            self$load_jobs(min(n_undispatched_jobs, 5))
+            
+            self$dispatch_jobs()
+          }
+        }
+        
+        # look through jobs done
+        for ( k in 1:length(self$chunks) ){
+          if ( self$jobs_dispatched[k] &&
+               (! self$jobs_processed[k])) {
+            st<-self$process_jobs_done(k)
+          }
+        }
+      }
+      self$output_list
+    }
+  )
+)
+
+parallel_control_run<-function( dataset ){
+  hc_state<-HCProcessState$new()
+  hc_control<-HCProcessControl$new()
+  
+  fcp<-FeedbackControlProcess$new( dataset, clustering_task, hc_state, hc_control, SERVERS)
+  bt<-fcp$run()
+  bt
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 ########################################################
 #  Currently under development -- this code right here
 #
@@ -688,3 +918,4 @@ cluster_very_large_data<-function( largeDataset ){
     }
   }
 }
+
