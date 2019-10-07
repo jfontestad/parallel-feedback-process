@@ -343,8 +343,8 @@ parallel_cluster_medium_data<-function( mediumDataset ){
 
 
 
-SERVER1 = 'ec2-18-221-247-10.us-east-2.compute.amazonaws.com'
-SERVER2 = 'ec2-18-218-228-166.us-east-2.compute.amazonaws.com'
+SERVER1 = 'http://ec2-18-190-139-11.us-east-2.compute.amazonaws.com'
+SERVER2 = 'http://ec2-3-130-172-110.us-east-2.compute.amazonaws.com'
 
 SERVERS = list( SERVER1, SERVER2 )
 
@@ -387,7 +387,9 @@ HCProcessControl<-R6Class( "HCProcessControl", public=list(
 
   termination_condition = function( state ){
     print( state$current_error )
-    if (abs(state$current_error)>0 && abs(state$current_error)< self$epsion){
+    print( self$epsilon)
+    if ( (abs(state$current_error)>0) && 
+         (abs(state$current_error)< self$epsilon)){
       return(TRUE)
     }
     return(FALSE)
@@ -397,7 +399,7 @@ HCProcessControl<-R6Class( "HCProcessControl", public=list(
 ########################################################
 #  Currently under development -- this code right here
 #
-FeedbackControlProcess<-R6Class( "FeedbackControlProcess", list(
+FeedbackControlProcess<-R6Class( "FeedbackControlProcess", public=list(
 
     state = NULL,
     chunks = NULL,
@@ -414,8 +416,8 @@ FeedbackControlProcess<-R6Class( "FeedbackControlProcess", list(
 
       self$chunks<-split_dataset( dataset )
       n<-length(self$chunks)
-      self$control = control
-      self$state = state
+      self$control = control$clone()
+      self$state = state$clone()
       self$task_list<-vector( "list", n )
       self$output_list<-vector( "list", n )
       self$jobs_processed<-rep(0,n)
@@ -429,10 +431,16 @@ FeedbackControlProcess<-R6Class( "FeedbackControlProcess", list(
     
     select_server = function(){
       # just rotate
-      self$cur_server = self$cur_server+1 %% length(self$servers)
-      if (sel$cur_server==0){
+      ns<-length(self$servers)
+      self$cur_server = self$cur_server+1 %% ns
+      if (self$cur_server==0){
         self$cur_server<-1
       }
+      while( self$cur_server > ns){
+        self$cur_server<- self$cur_server - ns
+      }
+      
+      print(self$cur_server)
       self$cur_server
     },
   
@@ -456,7 +464,10 @@ FeedbackControlProcess<-R6Class( "FeedbackControlProcess", list(
       while ( length(as.list(self$jobs_queue)) > 0 ){
         id = pop( self$jobs_queue )
         print(paste('dispatching job',id))
-        f<-future({task_fun( self$chunks[[id]], self$servers[[self$select_server()]] )})
+        f<-future({
+          self$task_fun( self$chunks[[id]], 
+                         self$servers[[self$select_server()]] )
+          })
         self$task_list[[id]]<-f
         self$jobs_dispatched[id]<-1
       }
@@ -918,4 +929,3 @@ cluster_very_large_data<-function( largeDataset ){
     }
   }
 }
-
