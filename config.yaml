@@ -1,0 +1,28 @@
+services:
+  spark:
+    version: 2.4.4
+
+  hdfs:
+    version: 3.2.1
+
+provider: ec2
+
+providers:
+  ec2:
+    key-name: thyself
+    identity-file: /home/zulfi/.ssh/thyself.pem
+    instance-type: t2.micro
+    region: us-east-2
+    ami: ami-07f511b017358c32b
+    user: ubuntu
+    tenancy: default
+    ebs-optimized: no
+    instance-initiated-shutdown-behavior: terminate
+
+launch:
+   num-slaves: 3
+   install-hdfs: True
+   install-spark: True
+
+debug: false
+
